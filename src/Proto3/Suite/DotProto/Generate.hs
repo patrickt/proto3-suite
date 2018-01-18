@@ -36,7 +36,7 @@ import           Control.Monad.Except
 import           Data.Char
 import           Data.Coerce
 import           Data.List                      (find, intercalate, nub, sortBy,
-                                                 stripPrefix)
+                                                 stripPrefix, foldl')
 import qualified Data.Map                       as M
 import           Data.Maybe                     (catMaybes, fromMaybe)
 import           Data.Monoid
@@ -354,10 +354,10 @@ hsTypeFromDotProto ctxt (Repeated pType) =
     HsTyApp (primType_ "Vector") <$> hsTypeFromDotProtoPrim ctxt pType
 hsTypeFromDotProto ctxt (NestedRepeated pType) =
     HsTyApp (primType_ "Vector") <$> hsTypeFromDotProtoPrim ctxt pType
-hsTypeFromDotProto ctxt (Map kType vType) = do
-    kType' <- hsTypeFromDotProtoPrim ctxt kType
-    vType' <- hsTypeFromDotProtoPrim ctxt vType
-    return $ primType_ "Map" `HsTyApp` kType' `HsTyApp` vType'
+hsTypeFromDotProto ctxt (Map kType vType) =
+    fmap (tyApp (primType_ "Map"))
+    . sequence
+    $ [ hsTypeFromDotProtoPrim ctxt kType, hsTypeFromDotProtoPrim ctxt vType ]
 
 hsTypeFromDotProtoPrim :: TypeContext -> DotProtoPrimType -> CompileResult HsType
 hsTypeFromDotProtoPrim _    Int32           = pure $ primType_ "Int32"
@@ -398,15 +398,17 @@ msgTypeFromDpTypeInfo
   _ident
   = Left InternalEmptyModulePath
 msgTypeFromDpTypeInfo
-  DotProtoTypeInfo { dotProtoTypeInfoParent     = p
+  DotProtoTypeInfo { dotProtoTypeInfoParent = p
                    , dotProtoTypeInfoModulePath = modulePath
                    }
   ident
-  = HsTyCon <$> do Qual <$> modulePathModName modulePath
-                        <*> do HsIdent <$> do
-                                 nestedTypeName p =<< dpIdentUnqualName ident
+  = do modName     <- modulePathModName modulePath
+       unqualIdent <- dpIdentUnqualName ident
+       qualIdent   <- nestedTypeName p unqualIdent
+       return $ HsTyCon (Qual modName (HsIdent qualIdent))
 
--- | Given a 'DotProtoIdentifier' for the parent type and the unqualified name of this type, generate the corresponding Haskell name
+-- | Given a 'DotProtoIdentifier' for the parent type and the unqualified name
+-- of this type, generate the corresponding Haskell name
 nestedTypeName :: DotProtoIdentifier -> String -> CompileResult String
 nestedTypeName Anonymous       nm = typeLikeName nm
 nestedTypeName (Single parent) nm =
@@ -602,7 +604,7 @@ messageInstD ctxt parentIdent msgIdent messageParts =
                 do -- Create all pattern match & expr for each constructor:
                    --    Constructor y -> encodeMessageField num (Nested (Just y)) -- for embedded messages
                    --    Constructor y -> encodeMessageField num (ForceEmit y)     -- for everything else
-                   alts <- sequence $
+                   alts <- sequence
                      [ do
                        xE <- wrapE ctxt dpType options
                              $ case dpType of
@@ -618,7 +620,7 @@ messageInstD ctxt parentIdent msgIdent messageParts =
                      | OneofSubfield fieldNum conName _ dpType options <- subfields
                      ]
                    pure $ HsCase recordFieldName'
-                        $ [ alt_ (HsPApp (haskellName "Nothing") [])
+                          [ alt_ (HsPApp (haskellName "Nothing") [])
                                  (HsUnGuardedAlt memptyE)
                                  []
                           , alt_ (HsPApp (haskellName "Just") [patVar "x"])
@@ -653,14 +655,14 @@ messageInstD ctxt parentIdent msgIdent messageParts =
                                     ]
         | QualifiedField _ fieldInfo <- qualifiedFields ]
 
-     dotProtoE <- HsList <$> sequence
-         [ dpTypeE dpType >>= \typeE ->
-             pure (apply dotProtoFieldC [ fieldNumberE fieldNum, typeE
-                                        , dpIdentE fieldIdent
-                                        , HsList (map optionE options)
-                                        , maybeE (HsLit . HsString) comments ])
-         | DotProtoMessageField (DotProtoField fieldNum dpType fieldIdent options comments)
-             <- messageParts ]
+     let dotProtoE = HsList
+            [ apply dotProtoFieldC [ fieldNumberE fieldNum
+                                   , dpTypeE dpType
+                                   , dpIdentE fieldIdent
+                                   , HsList (map optionE options)
+                                   , maybeE (HsLit . HsString) comments ]
+            | DotProtoMessageField (DotProtoField fieldNum dpType fieldIdent options comments)
+                <- messageParts ]
 
      let encodeMessageDecl = match_ (HsIdent "encodeMessage")
                                     [HsPWildCard, HsPRec (unqual_ msgName) punnedFieldsP]
@@ -797,9 +799,9 @@ fromJSONPBMessageInstD _ctxt parentIdent msgIdent messageParts = do
               , HsParen (HsLambda l [patVar "obj"] fieldAps)
               ]
         where
-          fieldAps = foldl (\f -> HsInfixApp f apOp)
-                           (apply pureE [ HsVar (unqual_ msgName) ])
-                           (onQF normalParserE oneofParserE <$> qualFields)
+          fieldAps = foldl' (`HsInfixApp` apOp)
+                            (apply pureE [ HsVar (unqual_ msgName) ])
+                            (onQF normalParserE oneofParserE <$> qualFields)
 
   let parseJSONPBDecl =
         match_ (HsIdent "parseJSONPB") [] (HsUnGuardedRhs parseJSONPBE) []
@@ -823,7 +825,7 @@ data FieldInfo
   deriving Show
 
 -- | Bookkeeping for oneof fields
-data OneofField = OneofField
+newtype OneofField = OneofField
   { subfields :: [OneofSubfield]
   } deriving Show
 
@@ -1253,7 +1255,7 @@ dotProtoServiceD pkgIdent ctxt serviceIdent service =
 -- * Common Haskell expressions, constructors, and operators
 
 dotProtoFieldC, primC, optionalC, repeatedC, nestedRepeatedC, namedC,
-  fieldNumberC, singleC, dotsC, pathC, nestedC, anonymousC, dotProtoOptionC,
+  fieldNumberC, singleC, dotsC, pathC, nestedC, anonymousC, dotProtoOptionC, dotProtoMapC,
   identifierC, stringLitC, intLitC, floatLitC, boolLitC, trueC, falseC,
   unaryHandlerC, clientStreamHandlerC, serverStreamHandlerC, biDiStreamHandlerC,
   methodNameC, nothingC, justC, forceEmitC, mconcatE, encodeMessageFieldE,
@@ -1267,6 +1269,7 @@ primC                = HsVar (protobufName "Prim")
 optionalC            = HsVar (protobufName "Optional")
 repeatedC            = HsVar (protobufName "Repeated")
 nestedRepeatedC      = HsVar (protobufName "NestedRepeated")
+dotProtoMapC         = HsVar (protobufName "Map")
 namedC               = HsVar (protobufName "Named")
 fieldNumberC         = HsVar (protobufName "FieldNumber")
 singleC              = HsVar (protobufName "Single")
@@ -1410,12 +1413,12 @@ optionE :: DotProtoOption -> HsExp
 optionE (DotProtoOption name value) = apply dotProtoOptionC [ dpIdentE name
                                                             , dpValueE value ]
 
-dpTypeE :: DotProtoType -> CompileResult HsExp
-dpTypeE (Prim p)           = pure (apply primC           [ dpPrimTypeE p ])
-dpTypeE (Optional p)       = pure (apply optionalC       [ dpPrimTypeE p ])
-dpTypeE (Repeated p)       = pure (apply repeatedC       [ dpPrimTypeE p ])
-dpTypeE (NestedRepeated p) = pure (apply nestedRepeatedC [ dpPrimTypeE p ])
-dpTypeE (Map _ _)          = internalError "dpTypeE: Map"
+dpTypeE :: DotProtoType -> HsExp
+dpTypeE (Prim p)           = apply primC           [ dpPrimTypeE p ]
+dpTypeE (Optional p)       = apply optionalC       [ dpPrimTypeE p ]
+dpTypeE (Repeated p)       = apply repeatedC       [ dpPrimTypeE p ]
+dpTypeE (NestedRepeated p) = apply nestedRepeatedC [ dpPrimTypeE p ]
+dpTypeE (Map k v)          = apply dotProtoMapC    [ dpPrimTypeE k, dpPrimTypeE v ]
 
 dpPrimTypeE :: DotProtoPrimType -> HsExp
 dpPrimTypeE (Named named) = apply namedC [ dpIdentE named ]
@@ -1467,6 +1470,8 @@ defaultImports usesGrpc =
                 (Just (False, [ importSym "fromString" ]))
   , importDecl_ dataVectorM               True  (Just haskellNS)
                 (Just (False, [ importSym "Vector" ]))
+  , importDecl_ dataMapM                  True  (Just haskellNS)
+                (Just (False, [ importSym "Map" ]))
   , importDecl_ dataIntM                  True  (Just haskellNS)
                 (Just (False, [ importSym "Int16", importSym "Int32"
                               , importSym "Int64" ]))
@@ -1498,6 +1503,7 @@ defaultImports usesGrpc =
         dataStringM               = Module "Data.String"
         dataIntM                  = Module "Data.Int"
         dataVectorM               = Module "Data.Vector"
+        dataMapM                  = Module "Data.Map"
         dataWordM                 = Module "Data.Word"
         ghcGenericsM              = Module "GHC.Generics"
         ghcEnumM                  = Module "GHC.Enum"
