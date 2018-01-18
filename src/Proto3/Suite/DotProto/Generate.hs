@@ -354,8 +354,10 @@ hsTypeFromDotProto ctxt (Repeated pType) =
     HsTyApp (primType_ "Vector") <$> hsTypeFromDotProtoPrim ctxt pType
 hsTypeFromDotProto ctxt (NestedRepeated pType) =
     HsTyApp (primType_ "Vector") <$> hsTypeFromDotProtoPrim ctxt pType
-hsTypeFromDotProto _    (Map _ _) =
-    internalError "No support for protobuf mappings"
+hsTypeFromDotProto ctxt (Map kType vType) = do
+    kType' <- hsTypeFromDotProtoPrim ctxt kType
+    vType' <- hsTypeFromDotProtoPrim ctxt vType
+    return $ primType_ "Map" `HsTyApp` kType' `HsTyApp` vType'
 
 hsTypeFromDotProtoPrim :: TypeContext -> DotProtoPrimType -> CompileResult HsType
 hsTypeFromDotProtoPrim _    Int32           = pure $ primType_ "Int32"
