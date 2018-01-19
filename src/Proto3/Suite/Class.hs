@@ -90,6 +90,7 @@ module Proto3.Suite.Class
   , GenericMessage(..)
   ) where
 
+import           Control.Arrow          ((***))
 import           Control.Monad
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Base64 as B64
@@ -98,6 +99,7 @@ import qualified Data.Foldable          as F
 import           Data.Functor           (($>))
 import           Data.Int               (Int32, Int64)
 import           Data.Maybe             (fromMaybe, isNothing)
+import qualified Data.Map               as M
 import           Data.Monoid            ((<>))
 import           Data.Proxy             (Proxy (..))
 import           Data.Sequence          (Seq)
@@ -203,6 +205,10 @@ instance (HasDefault a) => HasDefault (ForceEmit a) where
 instance HasDefault (Vector a) where
   def       = mempty
   isDefault = null
+
+instance HasDefault (M.Map k v) where
+  def       = mempty
+  isDefault = M.null
 
 -- | Used in generated records to represent an unwrapped 'Nested'
 instance HasDefault (Maybe a) where
@@ -518,6 +524,20 @@ instance MessageField (PackedVec Bool) where
       toBool _ = False
   protoType _ = messageField (Repeated Bool) (Just DotProto.PackedField)
 
+instance forall k v. (Primitive k, MessageField v) => MessageField (M.Map k v) where
+  encodeMessageField fn = foldMap (Encode.embedded fn . encodeMessage (fieldNumber 1))
+                        . M.toList
+
+  decodeMessageField = fmap (M.fromList . F.toList)
+                            (repeated (Decode.embedded' onePair))
+    where
+      onePair :: Parser RawMessage (k,v)
+      onePair = decodeMessage (fieldNumber 1)
+
+  protoType _ = messageField (Map (Prim $ primType (Proxy @k))
+                                  (dotProtoFieldType (protoType (Proxy @v))))
+                             Nothing
+
 instance MessageField (PackedVec Word32) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromIntegral
   decodeMessageField = decodePacked Decode.packedVarints
@@ -583,7 +603,9 @@ instance (MessageField e, KnownSymbol comments) => MessageField (e // comments) 
 decodePacked
   :: Parser RawPrimitive [a]
   -> Parser RawField (PackedVec a)
-decodePacked p = Parser $ \fs -> fmap (fromList . join . F.toList) $ TR.sequence $ fmap (runParser p) fs
+decodePacked = Parser
+             . fmap (fromList . join . F.toList)
+             . TR.traverse . runParser
 
 -- | This class captures those types which correspond to protocol buffer messages.
 class Message a where
