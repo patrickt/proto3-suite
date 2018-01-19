@@ -90,7 +90,6 @@ module Proto3.Suite.Class
   , GenericMessage(..)
   ) where
 
-import           Control.Arrow          ((***))
 import           Control.Monad
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Base64 as B64
@@ -207,7 +206,7 @@ instance HasDefault (Vector a) where
   isDefault = null
 
 instance HasDefault (M.Map k v) where
-  def       = mempty
+  def       = M.empty
   isDefault = M.null
 
 -- | Used in generated records to represent an unwrapped 'Nested'
@@ -524,7 +523,7 @@ instance MessageField (PackedVec Bool) where
       toBool _ = False
   protoType _ = messageField (Repeated Bool) (Just DotProto.PackedField)
 
-instance forall k v. (Primitive k, MessageField v) => MessageField (M.Map k v) where
+instance forall k v. (Ord k, Primitive k, MessageField v) => MessageField (M.Map k v) where
   encodeMessageField fn = foldMap (Encode.embedded fn . encodeMessage (fieldNumber 1))
                         . M.toList
 
@@ -534,7 +533,7 @@ instance forall k v. (Primitive k, MessageField v) => MessageField (M.Map k v) w
       onePair :: Parser RawMessage (k,v)
       onePair = decodeMessage (fieldNumber 1)
 
-  protoType _ = messageField (Map (Prim $ primType (Proxy @k))
+  protoType _ = messageField (Map (primType (Proxy @k))
                                   (dotProtoFieldType (protoType (Proxy @v))))
                              Nothing
 
@@ -604,7 +603,7 @@ decodePacked
   :: Parser RawPrimitive [a]
   -> Parser RawField (PackedVec a)
 decodePacked = Parser
-             . fmap (fromList . join . F.toList)
+             . fmap (fmap (fromList . join . F.toList))
              . TR.traverse . runParser
 
 -- | This class captures those types which correspond to protocol buffer messages.
