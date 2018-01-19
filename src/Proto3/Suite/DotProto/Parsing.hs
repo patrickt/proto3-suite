@@ -224,7 +224,9 @@ topStatement = (DPSImport     <$> import_)
 import_ :: Parser DotProtoImport
 import_ = do string "import"
              whiteSpace
-             qualifier <- option DotProtoImportDefault ((string "weak" $> DotProtoImportWeak) <|> (string "public" $> DotProtoImportPublic))
+             qualifier <- option DotProtoImportDefault
+                                 (string "weak"   $> DotProtoImportWeak <|>
+                                  string "public" $> DotProtoImportPublic)
              whiteSpace
              target <- FP.fromText . T.pack <$> stringLit
              string ";"
@@ -331,10 +333,16 @@ messagePart = try (DotProtoMessageDefinition <$> enum)
           <|> try (DotProtoMessageField      <$> messageMapField)
           <|>     (DotProtoMessageField      <$> messageField)
 
+dotProtoType :: Parser DotProtoType
+dotProtoType =
+  choice [ string "repeated" $> Repeated
+         , string "optional" $> Optional
+         , pure Prim
+         ]
+  <*> (whiteSpace *> primType)
+
 messageField :: Parser DotProtoField
-messageField = do ctor <- (try $ string "repeated" $> Repeated) <|> pure Prim
-                  whiteSpace
-                  mtype <- primType
+messageField = do ty <- dotProtoType
                   whiteSpace
                   mname <- identifier
                   whiteSpace
@@ -346,7 +354,7 @@ messageField = do ctor <- (try $ string "repeated" $> Repeated) <|> pure Prim
                   whiteSpace
                   string ";"
                   -- TODO: parse comments
-                  return $ DotProtoField mnumber (ctor mtype) mname moptions Nothing
+                  return $ DotProtoField mnumber ty mname moptions Nothing
 
 messageMapField :: Parser DotProtoField
 messageMapField = do string "map"
@@ -357,7 +365,7 @@ messageMapField = do string "map"
                      whiteSpace
                      string ","
                      whiteSpace
-                     vtype <- primType
+                     vtype <- dotProtoType
                      whiteSpace
                      string ">"
                      whiteSpace

@@ -1,4 +1,4 @@
-\# `proto3-suite`
+# `proto3-suite`
 
 This package defines tools for working with protocol buffers version 3 in Haskell.
 

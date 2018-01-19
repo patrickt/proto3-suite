@@ -107,13 +107,16 @@ prettyPrintProtoDefinition opts = defn where
   braces = ($$ PP.text "}") . (PP.text "{" <+>)
 
   msgPart :: DotProtoIdentifier -> DotProtoMessagePart -> PP.Doc
-  msgPart msgName (DotProtoMessageField f)           = field msgName f
-  msgPart _       (DotProtoMessageDefinition definition) = defn definition
+  msgPart msgName (DotProtoMessageField f)
+    = field msgName f
+  msgPart _       (DotProtoMessageDefinition definition)
+    = defn definition
   msgPart _       (DotProtoMessageReserved reservations)
     =   PP.text "reserved"
     <+> (PP.hcat . PP.punctuate (PP.text ", ") $ pPrint <$> reservations)
     <>  PP.text ";"
-  msgPart msgName (DotProtoMessageOneOf name fields)     = PP.text "oneof" <+> pPrint name <+> (PP.braces $ PP.vcat $ field msgName <$> fields)
+  msgPart msgName (DotProtoMessageOneOf name fields)
+    = PP.text "oneof" <+> pPrint name <+> (PP.braces $ PP.vcat $ field msgName <$> fields)
 
   field :: DotProtoIdentifier -> DotProtoField -> PP.Doc
   field msgName (DotProtoField number mtype name options comments)

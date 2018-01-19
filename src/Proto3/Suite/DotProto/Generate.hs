@@ -357,9 +357,8 @@ hsTypeFromDotProto ctxt (Repeated pType) =
 hsTypeFromDotProto ctxt (NestedRepeated pType) =
     HsTyApp (primType_ "Vector") <$> hsTypeFromDotProtoPrim ctxt pType
 hsTypeFromDotProto ctxt (Map kType vType) =
-    fmap (tyApp (primType_ "Map"))
-    . sequence
-    $ [ hsTypeFromDotProtoPrim ctxt kType, hsTypeFromDotProtoPrim ctxt vType ]
+    tyApp (primType_ "Map") <$> sequence
+      [ hsTypeFromDotProtoPrim ctxt kType, hsTypeFromDotProtoPrim ctxt vType ]
 
 hsTypeFromDotProtoPrim :: TypeContext -> DotProtoPrimType -> CompileResult HsType
 hsTypeFromDotProtoPrim _    Int32           = pure $ primType_ "Int32"
@@ -899,7 +898,9 @@ wrapE ctxt dpt opts e = case dpt of
     | isUnpacked opts                     -> wrapVE "UnpackedVec" ty
     | isPacked opts || isPackable ctxt ty -> wrapVE "PackedVec"   ty
     | otherwise                           -> wrapVE "UnpackedVec" ty
-  _ -> internalError "wrapE: unimplemented"
+  Map kTy vTy
+    ->
+--      _ -> internalError "wrapE: unimplemented"
   where
     wrapVE nm ty = pure . wrapWithFuncE nm . wrapPrimVecE ty $ e
 
