@@ -18,6 +18,7 @@ import qualified Data.Text as T
 import qualified Filesystem.Path.CurrentOS as FP
 import Proto3.Suite.DotProto.AST
 import Proto3.Wire.Types (FieldNumber(..))
+import Safe (headDef)
 import Text.Parsec (parse, ParseError)
 import Text.Parsec.String (Parser)
 import Text.Parser.Char
@@ -54,9 +55,9 @@ newtype ProtoParser a = ProtoParser { runProtoParser :: Parser a }
            , Parsing, CharParsing, LookAheadParsing)
 
 instance TokenParsing ProtoParser where
-  someSpace   = TokenStyle.buildSomeSpaceParser
-                  (ProtoParser someSpace)
-                  TokenStyle.javaCommentStyle
+  someSpace = TokenStyle.buildSomeSpaceParser
+                (ProtoParser someSpace)
+                TokenStyle.javaCommentStyle
   -- use the default implementation for other methods:
   -- nesting, semi, highlight, token
 
@@ -167,22 +168,19 @@ data DotProtoStatement
   | DPSEmpty
   deriving Show
 
-sortStatements :: Path -> [DotProtoStatement] -> DotProto
-sortStatements modulePath statements
-  = DotProto { protoOptions     =       [ x | DPSOption     x <- statements]
-             , protoImports     =       [ x | DPSImport     x <- statements]
-             , protoPackage     = adapt [ x | DPSPackage    x <- statements]
-             , protoDefinitions =       [ x | DPSDefinition x <- statements]
-             , protoMeta        = DotProtoMeta modulePath
-             }
-  where
-    adapt (x:_) = x
-    adapt _     = DotProtoNoPackage
-
 topLevel :: Path -> ProtoParser DotProto
-topLevel modulePath = do whiteSpace
-                         syntaxSpec
-                         sortStatements modulePath <$> many topStatement
+topLevel modulePath = do
+  whiteSpace
+  syntaxSpec
+  statements <- many topStatement
+  return DotProto
+    { protoOptions     = [ x | DPSOption     x <- statements]
+    , protoImports     = [ x | DPSImport     x <- statements]
+    , protoPackage     = headDef DotProtoNoPackage
+                         [ x | DPSPackage    x <- statements]
+    , protoDefinitions = [ x | DPSDefinition x <- statements]
+    , protoMeta        = DotProtoMeta modulePath
+    }
 
 --------------------------------------------------------------------------------
 -- top-level statements
@@ -218,7 +216,9 @@ definition = message
 -- options
 
 inlineOption :: ProtoParser DotProtoOption
-inlineOption = DotProtoOption <$> (optionName <* symbol "=") <*> value
+inlineOption =  DotProtoOption
+            <$> optionName <* symbol "="
+            <*> value
   where
     optionName = nestedIdentifier <|> identifier
 
@@ -233,7 +233,7 @@ topOption = symbol "option" *> inlineOption <* semi
 
 servicePart :: ProtoParser DotProtoServicePart
 servicePart = rpc
-          <|> (DotProtoServiceOption <$> topOption)
+          <|> DotProtoServiceOption <$> topOption
           <|> empty $> DotProtoServiceEmpty
 
 rpcOptions :: ProtoParser [DotProtoOption]
@@ -272,7 +272,8 @@ message = do symbol "message"
 messageOneOf :: ProtoParser DotProtoMessagePart
 messageOneOf = do symbol "oneof"
                   name <- singleIdentifier
-                  body <- braces $ many (messageField <|> empty $> DotProtoEmptyField)
+                  body <- braces $ many $
+                            messageField <|> empty $> DotProtoEmptyField
                   return $ DotProtoMessageOneOf name body
 
 messagePart :: ProtoParser DotProtoMessagePart
@@ -285,19 +286,13 @@ messagePart = try (DotProtoMessageDefinition <$> enum)
 messageType :: ProtoParser DotProtoType
 messageType =  try mapType <|> dotProtoType
   where
-    dotProtoType =  try repType
-                <|> try optType
-                <|> (Prim <$> primType)
-
     mapType = do symbol "map"
-                 angles $ Map <$> (primType <* comma)
+                 angles $ Map <$> primType <* comma
                               <*> dotProtoType
 
-    repType = do symbol "repeated"
-                 Repeated <$> primType
-    
-    optType = do symbol "optional"
-                 Optional <$> primType
+    dotProtoType =  try (do symbol "repeated"; Repeated <$> primType)
+                <|> try (do symbol "optional"; Optional <$> primType)
+                <|> (Prim <$> primType)
 
 messageField :: ProtoParser DotProtoField
 messageField = do mtype <- messageType
@@ -335,7 +330,8 @@ enum = do symbol "enum"
 -- field reservations
 
 range :: ProtoParser DotProtoReservedField
-range = do lookAhead (integer >> symbol "to") -- [note] parsec commits to this parser too early without this lookahead
+range = do lookAhead (integer >> symbol "to")
+           -- [note] parsec commits to this parser too early without this lookahead
            s <- fromInteger <$> integer
            symbol "to"
            e <- fromInteger <$> integer
