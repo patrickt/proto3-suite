@@ -259,7 +259,9 @@ class Enum a => Finite a where
   -- | Enumerate values of a finite type, along with names of constructors.
   enumerate :: IsString string => Proxy a -> [(string, Int)]
 
-  default enumerate :: (IsString string, GenericFinite (Rep a)) => Proxy a -> [(string, Int)]
+  default enumerate
+    :: (IsString string, GenericFinite (Rep a))
+    => Proxy a -> [(string, Int)]
   enumerate _ = snd (genericEnumerate (Proxy @(Rep a)) 0)
 
 -- | Generate metadata for an enum type.
@@ -269,15 +271,17 @@ enum pr = DotProtoEnum (Single $ nameOf pr) (map enumField $ enumerate pr)
     enumField (name, value) = DotProtoEnumField (Single name) value []
 
 class GenericFinite (f :: * -> *) where
-  genericEnumerate :: IsString string => Proxy f -> Int -> (Int, [(string, Int)])
+  genericEnumerate
+    :: IsString string
+    => Proxy f -> Int -> (Int, [(string, Int)])
 
 instance ( GenericFinite f
          , GenericFinite g
          ) => GenericFinite (f :+: g) where
-  genericEnumerate _ i =
-    let (j, e1) = genericEnumerate (Proxy @f) i
-        (k, e2) = genericEnumerate (Proxy @g) j
-    in (k, e1 <> e2)
+  genericEnumerate _ i = (k, e1 <> e2)
+    where
+      (j, e1) = genericEnumerate (Proxy @f) i
+      (k, e2) = genericEnumerate (Proxy @g) j
 
 instance Constructor c => GenericFinite (M1 C c f) where
   genericEnumerate _ i = (i + 1, [ (fromString name, i) ])
@@ -405,7 +409,9 @@ instance Primitive BL.ByteString where
   decodePrimitive = Decode.lazyByteString
   primType _ = Bytes
 
-instance forall e. (Bounded e, Named e, Enum e) => Primitive (Enumerated e) where
+instance forall e. (Bounded e, Named e, Enum e)
+         => Primitive (Enumerated e)
+  where
   encodePrimitive num = Encode.enum num . enumify . enumerated
     where enumify (Left i) = i
           enumify (Right x) = fromEnum x
@@ -426,12 +432,16 @@ class MessageField a where
   -- | Decode a message field
   decodeMessageField :: Parser RawField a
 
-  default encodeMessageField :: (HasDefault a, Primitive a) => FieldNumber -> a -> Encode.MessageBuilder
+  default encodeMessageField
+    :: (HasDefault a, Primitive a)
+    => FieldNumber -> a -> Encode.MessageBuilder
   encodeMessageField num x
     | isDefault x = mempty
     | otherwise = encodePrimitive num x
 
-  default decodeMessageField :: (HasDefault a, Primitive a) => Parser RawField a
+  default decodeMessageField
+    :: (HasDefault a, Primitive a)
+    => Parser RawField a
   decodeMessageField = one decodePrimitive def
 
   -- | Get the type which represents this type inside another message.
@@ -440,12 +450,20 @@ class MessageField a where
   protoType p = messageField (Prim $ primType p) Nothing
 
 messageField :: DotProtoType -> Maybe DotProto.Packing -> DotProtoField
-messageField ty packing = DotProtoField (fieldNumber 1) ty Anonymous
-                            (case packing of
-                              (Just DotProto.PackedField)   -> [DotProtoOption (Single "packed") (BoolLit True)]
-                              (Just DotProto.UnpackedField) -> [DotProtoOption (Single "packed") (BoolLit False)]
-                              Nothing -> [])
-                            Nothing
+messageField ty packing = DotProtoField
+  { dorProtoFieldNumber = fieldNumber 1
+  , dotProtoFieldType = ty
+  , dotProtoFieldName = Anonymous
+  , dotProtoFieldOptions =
+      case packing of
+        Just DotProto.PackedField
+          -> [DotProtoOption (Single "packed") (BoolLit True)]
+        Just DotProto.UnpackedField
+          -> [DotProtoOption (Single "packed") (BoolLit False)]
+        _ -> []
+  , dotProtoFieldComment = Nothing
+  }
+
 -- [todo] what were these intended for?
 -- primDotProto :: DotProtoMessagePart -> DotProtoDefinition
 -- primDotProto field = DotProtoMessage generateMessagePartName [ field ]
@@ -480,23 +498,22 @@ seqToVec = fromList . F.toList
 
 instance (Named a, Message a) => MessageField (Nested a) where
   encodeMessageField num = foldMap (Encode.embedded num . encodeMessage (fieldNumber 1)) . nested
-  decodeMessageField = fmap Nested (Decode.embedded (decodeMessage (fieldNumber 1)))
-  protoType _ = messageField (Prim $ Named (Single (nameOf (Proxy @a)))) Nothing
+  decodeMessageField = Nested <$> Decode.embedded (decodeMessage (fieldNumber 1))
+  protoType _ = messageField (Prim . Named . Single . nameOf $ Proxy @a) Nothing
 
 instance Primitive a => MessageField (UnpackedVec a) where
   encodeMessageField fn = foldMap (encodePrimitive fn)
-  decodeMessageField = fmap (UnpackedVec . seqToVec) $ repeated decodePrimitive
+  decodeMessageField = UnpackedVec . seqToVec <$> repeated decodePrimitive
   protoType _ = messageField (Repeated $ primType (Proxy @a)) (Just DotProto.UnpackedField)
 
 instance forall a. (Named a, Message a) => MessageField (NestedVec a) where
   encodeMessageField fn = foldMap (Encode.embedded fn . encodeMessage (fieldNumber 1))
-                          . nestedvec
-  decodeMessageField = fmap (NestedVec . seqToVec)
-                            (repeated (Decode.embedded' oneMsg))
+                        . nestedvec
+  decodeMessageField = NestedVec . seqToVec <$> repeated (Decode.embedded' oneMsg)
     where
       oneMsg :: Parser RawMessage a
       oneMsg = decodeMessage (fieldNumber 1)
-  protoType _ = messageField (NestedRepeated (Named (Single (nameOf (Proxy @a))))) Nothing
+  protoType _ = messageField (NestedRepeated . Named . Single . nameOf $ Proxy @a) Nothing
 
 instance (Bounded e, Enum e, Named e) => MessageField (PackedVec (Enumerated e)) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . foldMap omit
@@ -505,11 +522,14 @@ instance (Bounded e, Enum e, Named e) => MessageField (PackedVec (Enumerated e))
       omit :: Enumerated e -> PackedVec Word64
       omit (Enumerated (Right e)) = pure . fromIntegral . fromEnum $ e
       omit _                      = mempty
+
   decodeMessageField = decodePacked (foldMap retain <$> Decode.packedVarints @Word64)
     where
       -- retain only those values which are inside the enum range
       retain = foldMap (pure . Enumerated. Right) . toEnumMay . fromIntegral
-  protoType _ = messageField (Repeated (Named (Single (nameOf (Proxy @e))))) (Just DotProto.PackedField)
+
+  protoType _ = messageField (Repeated . Named . Single . nameOf $ Proxy @e)
+                             (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Bool) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromBool
@@ -523,8 +543,10 @@ instance MessageField (PackedVec Bool) where
       toBool _ = False
   protoType _ = messageField (Repeated Bool) (Just DotProto.PackedField)
 
-instance forall k v. (Ord k, Primitive k, MessageField v) => MessageField (M.Map k v) where
-  encodeMessageField fn = foldMap (Encode.embedded fn . encodeMessage (fieldNumber 1))
+instance forall k v. (Ord k, Primitive k, MessageField v)
+         => MessageField (M.Map k v)
+  where
+  encodeMessageField fn = foldMap (Encode.embedded fn . encodeMessage . fieldNumber 1)
                         . M.toList
 
   decodeMessageField = fmap (M.fromList . F.toList)
@@ -539,59 +561,59 @@ instance forall k v. (Ord k, Primitive k, MessageField v) => MessageField (M.Map
 
 instance MessageField (PackedVec Word32) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromIntegral
-  decodeMessageField = decodePacked Decode.packedVarints
-  protoType _ = messageField (Repeated UInt32) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedVarints
+  protoType _           = messageField (Repeated UInt32) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Word64) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromIntegral
-  decodeMessageField = decodePacked Decode.packedVarints
-  protoType _ = messageField (Repeated UInt64) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedVarints
+  protoType _           = messageField (Repeated UInt64) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Int32) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromIntegral
-  decodeMessageField = decodePacked Decode.packedVarints
-  protoType _ = messageField (Repeated Int32) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedVarints
+  protoType _           = messageField (Repeated Int32) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Int64) where
   encodeMessageField fn = omittingDefault (Encode.packedVarints fn) . fmap fromIntegral
-  decodeMessageField = decodePacked Decode.packedVarints
-  protoType _ = messageField (Repeated Int64) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedVarints
+  protoType _           = messageField (Repeated Int64) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec (Fixed Word32)) where
   encodeMessageField fn = omittingDefault (Encode.packedFixed32 fn) . fmap fixed
-  decodeMessageField = fmap (fmap Fixed) (decodePacked Decode.packedFixed32)
-  protoType _ = messageField (Repeated DotProto.Fixed32) (Just DotProto.PackedField)
+  decodeMessageField    = fmap (fmap Fixed) (decodePacked Decode.packedFixed32)
+  protoType _           = messageField (Repeated DotProto.Fixed32) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec (Fixed Word64)) where
   encodeMessageField fn = omittingDefault (Encode.packedFixed64 fn) . fmap fixed
-  decodeMessageField = fmap (fmap Fixed) (decodePacked Decode.packedFixed64)
-  protoType _ = messageField (Repeated DotProto.Fixed64) (Just DotProto.PackedField)
+  decodeMessageField    = fmap (fmap Fixed) (decodePacked Decode.packedFixed64)
+  protoType _           = messageField (Repeated DotProto.Fixed64) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec (Signed (Fixed Int32))) where
   encodeMessageField fn = omittingDefault (Encode.packedFixed32 fn) . fmap (fromIntegral . fixed . signed)
-  decodeMessageField = fmap (fmap (Signed . Fixed)) (decodePacked Decode.packedFixed32)
-  protoType _ = messageField (Repeated SFixed32) (Just DotProto.PackedField)
+  decodeMessageField    = fmap (fmap (Signed . Fixed)) (decodePacked Decode.packedFixed32)
+  protoType _           = messageField (Repeated SFixed32) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec (Signed (Fixed Int64))) where
   encodeMessageField fn = omittingDefault (Encode.packedFixed64 fn) . fmap (fromIntegral . fixed . signed)
-  decodeMessageField = fmap (fmap (Signed . Fixed)) (decodePacked Decode.packedFixed64)
-  protoType _ = messageField (Repeated SFixed64) (Just DotProto.PackedField)
+  decodeMessageField    = fmap (fmap (Signed . Fixed)) (decodePacked Decode.packedFixed64)
+  protoType _           = messageField (Repeated SFixed64) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Float) where
   encodeMessageField fn = omittingDefault (Encode.packedFloats fn)
-  decodeMessageField = decodePacked Decode.packedFloats
-  protoType _ = messageField (Repeated Float) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedFloats
+  protoType _           = messageField (Repeated Float) (Just DotProto.PackedField)
 
 instance MessageField (PackedVec Double) where
   encodeMessageField fn = omittingDefault (Encode.packedDoubles fn)
-  decodeMessageField = decodePacked Decode.packedDoubles
-  protoType _ = messageField (Repeated Double) (Just DotProto.PackedField)
+  decodeMessageField    = decodePacked Decode.packedDoubles
+  protoType _           = messageField (Repeated Double) (Just DotProto.PackedField)
 
 instance (MessageField e, KnownSymbol comments) => MessageField (e // comments) where
   encodeMessageField fn = encodeMessageField fn . unCommented
-  decodeMessageField = fmap Commented decodeMessageField
-  protoType p = (protoType (lowerProxy1 p))
-                  { dotProtoFieldComment = Just (symbolVal (lowerProxy2 p)) }
+  decodeMessageField    = fmap Commented decodeMessageField
+  protoType p           = protoType (lowerProxy1 p)
+                            { dotProtoFieldComment = Just . symbolVal . lowerProxy2 $ p }
     where
       lowerProxy1 :: forall f (a :: k). Proxy (f a) -> Proxy a
       lowerProxy1 _ = Proxy
@@ -615,18 +637,26 @@ class Message a where
   -- | Generate a .proto message from the type information.
   dotProto :: Proxy a -> [DotProtoField]
 
-  default encodeMessage :: (Generic a, GenericMessage (Rep a)) => FieldNumber -> a -> Encode.MessageBuilder
+  default encodeMessage
+    :: (Generic a, GenericMessage (Rep a))
+    => FieldNumber -> a -> Encode.MessageBuilder
   encodeMessage num = genericEncodeMessage num . from
 
-  default decodeMessage :: (Generic a, GenericMessage (Rep a)) => FieldNumber -> Parser RawMessage a
-  decodeMessage = (fmap to .) genericDecodeMessage
+  default decodeMessage
+    :: (Generic a, GenericMessage (Rep a))
+    => FieldNumber -> Parser RawMessage a
+  decodeMessage = fmap to . genericDecodeMessage
 
-  default dotProto :: GenericMessage (Rep a) => Proxy a -> [DotProtoField]
+  default dotProto
+    :: GenericMessage (Rep a)
+    => Proxy a -> [DotProtoField]
   dotProto _ = genericDotProto (Proxy @(Rep a))
 
 -- | Generate metadata for a message type.
 message :: (Message a, Named a) => Proxy a -> DotProtoDefinition
-message pr = DotProtoMessage (Single $ nameOf pr) $ DotProtoMessageField <$> (dotProto pr)
+message pr = DotProtoMessage
+               (Single $ nameOf pr)
+               (DotProtoMessageField <$> dotProto pr)
 
 -- * Generic Instances
 
@@ -643,34 +673,50 @@ instance GenericMessage U1 where
   genericDecodeMessage _ = return U1
   genericDotProto _      = mempty
 
-instance (KnownNat (GenericFieldCount f), GenericMessage f, GenericMessage g) => GenericMessage (f :*: g) where
+instance ( KnownNat (GenericFieldCount f)
+         , GenericMessage f
+         , GenericMessage g
+         ) => GenericMessage (f :*: g)
+  where
   type GenericFieldCount (f :*: g) = GenericFieldCount f + GenericFieldCount g
-  genericEncodeMessage num (x :*: y) = genericEncodeMessage num x <> genericEncodeMessage (FieldNumber (getFieldNumber num + offset)) y
+
+  genericEncodeMessage num (x :*: y) =
+      genericEncodeMessage num x <>
+      genericEncodeMessage (FieldNumber (getFieldNumber num + offset)) y
     where
       offset = fromIntegral $ natVal (Proxy @(GenericFieldCount f))
-  genericDecodeMessage num = liftM2 (:*:) (genericDecodeMessage num) (genericDecodeMessage num2)
-    where num2 = FieldNumber $ getFieldNumber num + offset
-          offset = fromIntegral $ natVal (Proxy @(GenericFieldCount f))
-  genericDotProto _ = genericDotProto (Proxy @f) <> adjust (genericDotProto (Proxy @g))
+
+  genericDecodeMessage num =
+      liftM2 (:*:) (genericDecodeMessage num) (genericDecodeMessage num2)
+    where
+      num2   = FieldNumber $ getFieldNumber num + offset
+      offset = fromIntegral $ natVal (Proxy @(GenericFieldCount f))
+
+  genericDotProto _ =
+      genericDotProto (Proxy @f) <>
+      map adjustFieldNumber (genericDotProto (Proxy @g))
     where
       offset = fromIntegral $ natVal (Proxy @(GenericFieldCount f))
-      adjust = map adjustPart
-      adjustPart part = part { dotProtoFieldNumber = (FieldNumber . (offset +) . getFieldNumber . dotProtoFieldNumber) part }
+      adjustFieldNumber part = part
+        { dotProtoFieldNumber = FieldNumber . (offset +) . getFieldNumber
+            $ dotProtoFieldNumber part
+        }
 
 instance MessageField c => GenericMessage (K1 i c) where
   type GenericFieldCount (K1 i c) = 1
   genericEncodeMessage num (K1 x) = encodeMessageField num x
-  genericDecodeMessage num = fmap K1 (at decodeMessageField num)
-  genericDotProto _ = [protoType (Proxy @c)]
+  genericDecodeMessage num        = K1 <$> decodeMessageField `at` num
+  genericDotProto _               = [protoType (Proxy @c)]
 
 instance (Selector s, GenericMessage f) => GenericMessage (M1 S s f) where
   type GenericFieldCount (M1 S s f) = GenericFieldCount f
-  genericEncodeMessage num (M1 x) = genericEncodeMessage num x
-  genericDecodeMessage num = fmap M1 $ genericDecodeMessage num
-  genericDotProto _ = map applyName $ genericDotProto (Proxy @f)
+  genericEncodeMessage num (M1 x)   = genericEncodeMessage num x
+  genericDecodeMessage num          = M1 <$> genericDecodeMessage num
+  genericDotProto _                 = applyName <$> genericDotProto (Proxy @f)
     where
       applyName :: DotProtoField -> DotProtoField
-      applyName mp = mp { dotProtoFieldName = fromMaybe Anonymous newName} -- [issue] this probably doesn't match the intended name generating semantics
+      applyName mp = mp { dotProtoFieldName = fromMaybe Anonymous newName}
+                -- [issue] this probably doesn't match the intended name generating semantics
 
       newName :: Maybe DotProtoIdentifier
       newName = guard (not (null name)) $> Single name
@@ -679,12 +725,12 @@ instance (Selector s, GenericMessage f) => GenericMessage (M1 S s f) where
 
 instance GenericMessage f => GenericMessage (M1 C t f) where
   type GenericFieldCount (M1 C t f) = GenericFieldCount f
-  genericEncodeMessage num (M1 x) = genericEncodeMessage num x
-  genericDecodeMessage num = fmap M1 $ genericDecodeMessage num
-  genericDotProto _ = genericDotProto (Proxy @f)
+  genericEncodeMessage num (M1 x)   = genericEncodeMessage num x
+  genericDecodeMessage num          = M1 <$> genericDecodeMessage num
+  genericDotProto _                 = genericDotProto (Proxy @f)
 
 instance GenericMessage f => GenericMessage (M1 D t f) where
   type GenericFieldCount (M1 D t f) = GenericFieldCount f
-  genericEncodeMessage num (M1 x) = genericEncodeMessage num x
-  genericDecodeMessage num = fmap M1 $ genericDecodeMessage num
-  genericDotProto _ = genericDotProto (Proxy @f)
+  genericEncodeMessage num (M1 x)   = genericEncodeMessage num x
+  genericDecodeMessage num          = M1 <$> genericDecodeMessage num
+  genericDotProto _                 = genericDotProto (Proxy @f)
