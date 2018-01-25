@@ -77,6 +77,8 @@ import qualified Data.ByteString                  as BS
 import qualified Data.ByteString.Base64           as B64
 import qualified Data.ByteString.Lazy             as LBS
 import           Data.Coerce
+import qualified Data.Map                         as M
+import qualified Data.HashMap                         as HM
 import           Data.Proxy
 import           Data.Text                        (Text)
 import qualified Data.Text                        as T
@@ -423,3 +425,19 @@ instance ToJSONPB a => ToJSONPB (Maybe a) where
 instance FromJSONPB a => FromJSONPB (Maybe a) where
   parseJSONPB A.Null = pure Nothing
   parseJSONPB v      = fmap Just (parseJSONPB v)
+
+--------------------------------------------------------------------------------
+-- Instances for key-value maps
+
+instance (ToJSONPB v) => ToJSONPB (M.Map k v) where
+  toJSONPB kvs opts     = A.Object
+                        . HM.fromList
+                        . map (bimap (T.pack . show) (`toJSONPB` opts))
+                        . M.toList
+                        $ kvs
+  toEncodingPB kvs opts = E.dict (E.text . T.pack . show)
+                                 (`toEncodingPB` opts)
+                                 M.foldrWithKey
+                                 kvs
+instance (FromJSONPB k, FromJSONPB v) => FromJSONPB (M.Map k v) where
+  parseJSONPB v = A.parseJSON
